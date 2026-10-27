@@ -104,8 +104,11 @@
           <label>Book title<input id="book-title" required maxlength="160" placeholder="Enter the book title"></label>
           <div class="form-row"><label>Author<input id="book-author" required maxlength="120" value="Prashant Latta"></label><label>Category<input id="book-category" maxlength="80" placeholder="Essays, Science…"></label></div>
           <div class="form-row"><label>Language<input id="book-language" maxlength="40" value="English"></label><label>Cover image URL (optional)<input id="book-cover" type="url" placeholder="https://…"></label></div>
+          <label>Upload cover image (optional)<input id="book-cover-file" type="file" accept="image/jpeg,image/png,image/webp,image/avif"><span class="label-note">JPG, PNG, WebP or AVIF · max 5 MB</span></label>
+          <label>Upload book file (PDF or DOCX)<input id="book-file" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"><span class="label-note">PDF/DOCX · max 25 MB. Upload a new file only when adding/replacing the book file.</span></label>
+          <p class="form-message" id="file-status" role="status"></p>
           <label>Short description<textarea id="book-description" rows="2" maxlength="500" placeholder="A short introduction…"></textarea></label>
-          <label>Online reading content <span class="label-note">Plain text or basic HTML. This content is public when published.</span><textarea id="book-content" rows="8" required placeholder="Paste the text of your book or a chapter…"></textarea></label>
+          <label>Online reading content <span class="label-note">Optional introduction or fallback text. Uploaded PDF/DOCX files can be read online.</span><textarea id="book-content" rows="8" placeholder="Optional introduction or reading text…"></textarea></label>
           <label class="checkbox-row"><input type="checkbox" id="book-published"> Publish publicly now</label>
           <div class="form-row"><button class="button button-dark" type="submit">Save book</button><button class="button button-outline" type="button" id="cancel-book">Cancel</button></div>
           <p class="form-message" id="book-message" role="status"></p>
@@ -117,6 +120,7 @@
 
   <div class="toast hidden" id="toast" role="status"></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://unpkg.com/mammoth@1.9.0/mammoth.browser.min.js"></script>
   <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
