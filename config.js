@@ -4,6 +4,6 @@
   NEVER put a service_role or secret key in this file.
 */
 window.LIBRARY_CONFIG = {
-  supabaseUrl: "",
-  supabaseAnonKey: ""
+  supabaseUrl: "https://lyjmifeiwfjbfnzsrele.supabase.co",
+  supabaseAnonKey: "sb_publishable_kLf2CX4jVNeTdj3xrIT-Yg_vdSraqG_"
 };
