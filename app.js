@@ -4,6 +4,8 @@
   const config = window.LIBRARY_CONFIG || {};
   const configured = Boolean(config.supabaseUrl && config.supabaseAnonKey && window.supabase);
   let client = null, currentUser = null, allBooks = [], editingBookId = null;
+  const BOOK_BUCKET = "book-files", COVER_BUCKET = "book-covers";
+  const MAX_BOOK_BYTES = 25 * 1024 * 1024, MAX_COVER_BYTES = 5 * 1024 * 1024;
 
   if (configured) client = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey);
 
@@ -79,7 +81,7 @@
   }
   async function refreshLibrary(){
     if(configured){
-      const {data,error}=await client.from("books").select("id,title,author,category,language,description,content,cover_url,published,created_at").eq("published",true).order("created_at",{ascending:false});
+      const {data,error}=await client.from("books").select("id,title,author,category,language,description,content,cover_url,cover_path,file_path,file_name,file_type,access_type,published,created_at").eq("published",true).order("created_at",{ascending:false});
       if(error){console.error(error);allBooks=[];renderBooks();$("results-count").textContent="Library could not load — check setup";return;}
       allBooks=data||[];
     } else {
@@ -95,6 +97,7 @@
   }
   function coverMarkup(book,index){
     if(book.cover_url && /^https?:\/\//i.test(book.cover_url))return `<img src="${escapeHTML(book.cover_url)}" alt="Cover of ${escapeHTML(book.title)}" loading="lazy" onerror="this.remove()">`;
+    if(book.cover_path && client){ const {data}=client.storage.from(COVER_BUCKET).getPublicUrl(book.cover_path); if(data?.publicUrl)return `<img src="${escapeHTML(data.publicUrl)}" alt="Cover of ${escapeHTML(book.title)}" loading="lazy" onerror="this.remove()">`; }
     const initials=(book.title||"PL").split(/\s+/).slice(0,2).map(s=>s[0]).join("").toUpperCase();
     return `<div class="cover-placeholder"><span class="cover-number">PL BOOKS / ${String(index+1).padStart(2,"0")}</span><span class="cover-initials">${escapeHTML(initials)}</span><span class="cover-bottom">PRASHANT LATTA · DIGITAL ARCHIVE</span></div>`;
   }
@@ -110,13 +113,24 @@
   }
   async function openReader(id){
     let book=allBooks.find(b=>String(b.id)===String(id));
-    if(configured){const {data,error}=await client.from("books").select("id,title,author,category,language,description,content").eq("id",id).eq("published",true).maybeSingle();if(error||!data){toast("This book could not be opened.",true);return;}book=data;}
+    if(configured){const {data,error}=await client.from("books").select("id,title,author,category,language,description,content,file_path,file_name,file_type,access_type").eq("id",id).eq("published",true).maybeSingle();if(error||!data){toast("This book could not be opened.",true);return;}book=data;}
     if(!book)return;
     $("reader-category").textContent=(book.category||"BOOK").toUpperCase();
     $("reader-language").textContent=(book.language||"ENGLISH").toUpperCase();
     $("modal-title").textContent=book.title||"Untitled";
     $("reader-byline").textContent=`By ${book.author||"Prashant Latta"}`;
-    $("reader-content").innerHTML=safeContent(book.content||"<p>Reading content has not been added yet.</p>");
+    const reader=$("reader-content"); reader.innerHTML=safeContent(book.content||"");
+    if(book.file_path && client){
+      reader.innerHTML="<p>Preparing your book…</p>";
+      const {data:linkData,error:linkError}=await client.storage.from(BOOK_BUCKET).createSignedUrl(book.file_path, 1800);
+      if(linkError||!linkData?.signedUrl){reader.innerHTML=safeContent(book.content||"<p>The book file could not be opened.</p>");toast("Could not open the book file.",true);}
+      else if(book.file_type==="application/pdf" || /\.pdf$/i.test(book.file_name||"")){
+        reader.innerHTML=`<div class="pdf-reader"><iframe title="${escapeHTML(book.title||"Book PDF")}" src="${escapeHTML(linkData.signedUrl)}#toolbar=1&navpanes=0" loading="lazy"></iframe><p><a class="button button-outline" href="${escapeHTML(linkData.signedUrl)}" target="_blank" rel="noopener noreferrer">Open PDF in a new tab ↗</a></p></div>`;
+      } else if(/\.docx$/i.test(book.file_name||"") && window.mammoth){
+        try{const response=await fetch(linkData.signedUrl);if(!response.ok)throw new Error("Download failed");const buffer=await response.arrayBuffer();const converted=await window.mammoth.convertToHtml({arrayBuffer:buffer});reader.innerHTML=safeContent(converted.value||"<p>No readable text found in this DOCX file.</p>");}
+        catch(err){reader.innerHTML=`<p>Could not convert this DOCX for online reading. <a href="${escapeHTML(linkData.signedUrl)}" target="_blank" rel="noopener noreferrer">Open/download the DOCX ↗</a></p>`;}
+      }
+    } else if(!reader.innerHTML.trim()) reader.innerHTML="<p>Reading content has not been added yet.</p>";
     showModal("book-modal");
   }
   async function loadAdminBooks(){
@@ -138,15 +152,44 @@
     $("book-form").classList.remove("hidden");setMessage("book-message","");
     $("book-form").scrollIntoView({behavior:"smooth",block:"nearest"});
   }
-  function resetBookForm(){$("book-form").classList.add("hidden");$("book-form").reset();$("book-author").value="Prashant Latta";$("book-language").value="English";editingBookId=null;setMessage("book-message","");}
+  function resetBookForm(){$("book-form").classList.add("hidden");$("book-form").reset();$("book-author").value="Prashant Latta";$("book-language").value="English";editingBookId=null;setMessage("book-message","");if($("file-status"))$("file-status").textContent="";}
   async function editBook(id){const {data,error}=await client.from("books").select("*").eq("id",id).single();if(error){toast(error.message,true);return;}openBookForm(data);}
   async function saveBook(e){
     e.preventDefault();if(!client||!currentUser){setMessage("book-message","Please sign in first.");return;}
+    const bookFile=$("book-file").files[0]||null, coverFile=$("book-cover-file").files[0]||null;
+    const fileStatus=$("file-status"); if(fileStatus)fileStatus.textContent="";
+    if(bookFile){
+      const name=bookFile.name.toLowerCase();
+      if(!(name.endsWith(".pdf")||name.endsWith(".docx"))){setMessage("book-message","Please choose a PDF or DOCX file.");return;}
+      if(bookFile.size>MAX_BOOK_BYTES){setMessage("book-message","Book file must be 25 MB or smaller.");return;}
+      if(name.endsWith(".pdf")&&bookFile.type&&bookFile.type!=="application/pdf"){setMessage("book-message","The selected PDF file type looks invalid.");return;}
+      if(name.endsWith(".docx")&&bookFile.type&&bookFile.type!=="application/vnd.openxmlformats-officedocument.wordprocessingml.document"){setMessage("book-message","The selected DOCX file type looks invalid.");return;}
+    }
+    if(coverFile){if(!["image/jpeg","image/png","image/webp","image/avif"].includes(coverFile.type)){setMessage("book-message","Cover must be JPG, PNG, WebP or AVIF.");return;}if(coverFile.size>MAX_COVER_BYTES){setMessage("book-message","Cover image must be 5 MB or smaller.");return;}}
     const record={title:$("book-title").value.trim(),author:$("book-author").value.trim(),category:$("book-category").value.trim()||"General",language:$("book-language").value.trim()||"English",cover_url:$("book-cover").value.trim()||null,description:$("book-description").value.trim(),content:$("book-content").value,published:$("book-published").checked};
-    setMessage("book-message","Saving…");
-    const result=editingBookId?await client.from("books").update(record).eq("id",editingBookId).select().single():await client.from("books").insert(record).select().single();
+    setMessage("book-message","Saving book details…");
+    let result=editingBookId?await client.from("books").update(record).eq("id",editingBookId).select().single():await client.from("books").insert(record).select().single();
     if(result.error){setMessage("book-message",result.error.message);return;}
-    setMessage("book-message","Saved successfully.",true);toast("Book saved.");resetBookForm();await loadAdminBooks();await refreshLibrary();
+    const bookId=result.data.id; editingBookId=bookId; $("book-id").value=bookId; let uploadedBook=false, uploadedCover=false;
+    if(bookFile){
+      const ext=bookFile.name.toLowerCase().endsWith(".pdf")?"pdf":"docx";
+      const filePath=`${bookId}/book.${ext}`;
+      setMessage("book-message","Uploading book file…");
+      const {error:uploadError}=await client.storage.from(BOOK_BUCKET).upload(filePath,bookFile,{upsert:true,contentType:ext==="pdf"?"application/pdf":"application/vnd.openxmlformats-officedocument.wordprocessingml.document",cacheControl:"3600"});
+      if(uploadError){setMessage("book-message",`Book details saved, but file upload failed: ${uploadError.message}. Check Storage bucket and policies.`);return;}
+      const {error:updateError}=await client.from("books").update({file_path:filePath,file_name:bookFile.name,file_type:ext==="pdf"?"application/pdf":"application/vnd.openxmlformats-officedocument.wordprocessingml.document",file_size:bookFile.size}).eq("id",bookId);
+      if(updateError){setMessage("book-message",`File uploaded, but metadata update failed: ${updateError.message}`);return;} uploadedBook=true;
+    }
+    if(coverFile){
+      const ext=coverFile.type==="image/png"?"png":coverFile.type==="image/webp"?"webp":coverFile.type==="image/avif"?"avif":"jpg";
+      const coverPath=`${bookId}/cover.${ext}`;
+      setMessage("book-message","Uploading cover image…");
+      const {error:coverError}=await client.storage.from(COVER_BUCKET).upload(coverPath,coverFile,{upsert:true,contentType:coverFile.type,cacheControl:"3600"});
+      if(coverError){setMessage("book-message",`Book saved, but cover upload failed: ${coverError.message}`);return;}
+      const {error:updateError}=await client.from("books").update({cover_path:coverPath}).eq("id",bookId);
+      if(updateError){setMessage("book-message",`Cover uploaded, but metadata update failed: ${updateError.message}`);return;} uploadedCover=true;
+    }
+    setMessage("book-message","Saved successfully.",true);toast(uploadedBook||uploadedCover?"Book and file saved.":"Book saved.");resetBookForm();await loadAdminBooks();await refreshLibrary();
   }
   async function toggleBook(id,published){const {error}=await client.from("books").update({published:!published}).eq("id",id);if(error){toast(error.message,true);return;}toast(published?"Book unpublished.":"Book published.");await loadAdminBooks();await refreshLibrary();}
   async function deleteBook(id){if(!confirm("Delete this book permanently? This cannot be undone."))return;const {error}=await client.from("books").delete().eq("id",id);if(error){toast(error.message,true);return;}toast("Book deleted.");await loadAdminBooks();await refreshLibrary();}
